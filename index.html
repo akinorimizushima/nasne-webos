@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1.0">
+  <title>nasne</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="text/javascript" src="webOSjs/webOS.js" onerror="console.log('webOS.js not available')"></script>
+</head>
+
+<body>
+  <div id="app">
+    <!-- ===== Header / Tab Navigation ===== -->
+    <header id="header">
+      <div class="header-brand">
+        <h1>nasne</h1>
+      </div>
+      <nav id="tab-nav">
+        <button class="tab-btn focusable active" data-screen="channels" tabindex="0">チャンネル</button>
+        <button class="tab-btn focusable" data-screen="reservations" tabindex="0">録画予約</button>
+        <button class="tab-btn focusable" data-screen="settings" tabindex="0">設定</button>
+      </nav>
+    </header>
+
+    <!-- ===== Screen: Channels / Programs ===== -->
+    <section id="screen-channels" class="screen active">
+      <!-- Broadcasting type selector -->
+      <div class="broadcast-tabs">
+        <button class="broadcast-btn focusable active" data-type="2" tabindex="0">地デジ</button>
+        <button class="broadcast-btn focusable" data-type="3" tabindex="0">BS</button>
+        <button class="broadcast-btn focusable" data-type="4" tabindex="0">CS</button>
+      </div>
+
+      <div class="channels-layout">
+        <!-- Channel list (left pane) -->
+        <div class="channel-list" id="channel-list">
+          <div class="loading-message">nasneに接続してください</div>
+        </div>
+
+        <!-- Program detail (right pane) -->
+        <div class="program-detail" id="program-detail">
+          <div class="empty-state">
+            <p>チャンネルを選択してください</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Screen: Reservations ===== -->
+    <section id="screen-reservations" class="screen">
+      <div class="reservations-header">
+        <h2>録画予約一覧</h2>
+        <button class="btn focusable" id="btn-refresh-reservations" tabindex="0">更新</button>
+      </div>
+      <div class="reservation-list" id="reservation-list">
+        <div class="loading-message">読み込み中...</div>
+      </div>
+    </section>
+
+    <!-- ===== Screen: Settings ===== -->
+    <section id="screen-settings" class="screen">
+      <div class="settings-container">
+        <h2>設定</h2>
+        <div class="setting-group">
+          <label for="nasne-ip">nasne IP アドレス</label>
+          <div class="input-row">
+            <input type="text" id="nasne-ip" class="focusable" placeholder="192.168.1.XXX" tabindex="0">
+            <button class="btn btn-primary focusable" id="btn-connect" tabindex="0">接続</button>
+          </div>
+          <div class="connection-status" id="connection-status"></div>
+        </div>
+        <div class="setting-group">
+          <label>録画画質</label>
+          <div class="quality-options">
+            <button class="quality-btn focusable active" data-quality="100" tabindex="0">DR（最高画質）</button>
+            <button class="quality-btn focusable" data-quality="101" tabindex="0">3倍（長時間）</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Toast notification ===== -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- ===== Confirm dialog ===== -->
+    <div id="dialog-overlay" class="dialog-overlay hidden">
+      <div class="dialog">
+        <p id="dialog-message"></p>
+        <div class="dialog-actions">
+          <button class="btn focusable" id="dialog-cancel" tabindex="0">キャンセル</button>
+          <button class="btn btn-danger focusable" id="dialog-confirm" tabindex="0">削除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/nasne-api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+
+</html>
