@@ -171,6 +171,35 @@ class NasneClient {
         return this._get('/schedule/conflictListGet', params);
     }
 
+    // ─── Recorded ──────────────────────────────────────────
+
+    /**
+     * Get list of recorded titles.
+     * @param {Object} [options]
+     * @returns {Promise<Object>}
+     */
+    async getRecordedTitleList(options) {
+        return this._get('/recorded/titleListGet', {
+            searchCriteria: 0,
+            filter: 0,
+            startingIndex: 0,
+            requestedCount: 0,
+            sortCriteria: 0,
+            withDescriptionLong: 1,
+            withUserData: 0,
+            ...options,
+        });
+    }
+
+    /**
+     * Delete a recorded title.
+     * @param {string} id - recorded title ID
+     * @returns {Promise<Object>}
+     */
+    async deleteRecordedTitle(id) {
+        return this._get('/recorded/titleDelete', { id });
+    }
+
     // ─── Helpers ───────────────────────────────────────────
 
     /**

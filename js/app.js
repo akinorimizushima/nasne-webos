@@ -13,14 +13,23 @@ const state = {
   quality: 100, // DR
   pendingDeleteId: null,
   pendingDeleteType: null,
+  recordings: [],
+  isPlayerOpen: false,
+  player: {
+    el: null,
+    timer: null,
+  },
 };
 
 // ─── Initialization ──────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  // Set initial history state
+  history.replaceState({ screen: 'channels' }, '');
   initTabs();
   initBroadcastTabs();
   initSettings();
   initReservations();
+  initRecordings();
   initKeyboard();
   loadSavedSettings();
   console.log('[nasne] App initialized');
@@ -42,8 +51,15 @@ function switchScreen(screenName) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.tab-btn[data-screen="${screenName}"]`).classList.add('active');
 
+  // Push history state for back navigation (unless already at channels)
+  if (screenName !== 'channels') {
+    history.pushState({ screen: screenName }, '');
+  }
+
   if (screenName === 'reservations' && state.nasne) {
     loadReservations();
+  } else if (screenName === 'recordings' && state.nasne) {
+    loadRecordings();
   }
 
   // Set focus on new screen
@@ -354,6 +370,270 @@ function recordManual() {
   }, channel);
 }
 
+// ─── Recordings ─────────────────────────────────────────
+function initRecordings() {
+  document.getElementById('btn-refresh-recordings').addEventListener('click', loadRecordings);
+}
+
+async function loadRecordings() {
+  if (!state.nasne) {
+    document.getElementById('recording-list').innerHTML =
+      '<div class="loading-message">nasne に接続してください</div>';
+    return;
+  }
+
+  const listEl = document.getElementById('recording-list');
+  listEl.innerHTML = '<div class="loading-message">読み込み中...</div>';
+
+  try {
+    const result = await state.nasne.getRecordedTitleList();
+    // The structure might be similar to reservedList or different
+    // Assuming result.item or result.titleList
+    state.recordings = result.item || result.titleList || [];
+
+    if (state.recordings.length === 0) {
+      listEl.innerHTML = '<div class="loading-message">録画はありません</div>';
+      return;
+    }
+
+    listEl.innerHTML = '';
+    state.recordings.forEach(rec => {
+      const item = document.createElement('div');
+      item.className = 'recording-item focusable';
+      item.tabIndex = 0;
+
+      const duration = rec.duration ? formatDuration(rec.duration) : '';
+      const time = rec.startDateTime ? formatDateTime(rec.startDateTime) : '';
+
+      // Use a placeholder if no image exists (nasne API might not provide direct thumbnails without auth/more steps)
+      // Sometimes 'genre' or other fields avail.
+      const thumbUrl = 'assets/icon.png'; // Placeholder
+
+      item.innerHTML = `
+        <div class="recording-thumbnail">
+          <img src="${thumbUrl}" alt="Thumbnail">
+          ${duration ? `<div class="recording-duration">${duration}</div>` : ''}
+        </div>
+        <div class="recording-info">
+          <div class="recording-title">${escapeHtml(rec.title || '無題')}</div>
+          <div class="recording-meta">
+            <span>${time}</span>
+            <span>${escapeHtml(rec.channelName || '')}</span>
+          </div>
+        </div>
+      `;
+
+      item.addEventListener('click', () => {
+        playRecording(rec);
+      });
+
+      // Enter key handled by click event (via handleEnter)
+
+      listEl.appendChild(item);
+    });
+  } catch (err) {
+    console.error('[nasne] Failed to load recordings:', err);
+    listEl.innerHTML = '<div class="loading-message">録画一覧の取得に失敗しました</div>';
+  }
+}
+
+async function playRecording(recording) {
+  console.log('[nasne] Recording object:', JSON.stringify(recording, null, 2));
+
+  // Build the content URL from the recording
+  let videoUrl = findVideoUrl(recording);
+
+  // Fallback: construct URL from recording id
+  if (!videoUrl && recording.id && state.nasne) {
+    videoUrl = `http://${state.nasne.ip}:64210/recorded/bodyGet?id=${encodeURIComponent(recording.id)}`;
+    console.log('[nasne] Trying constructed URL:', videoUrl);
+  }
+
+  if (!videoUrl) {
+    showToast('再生URLが見つかりません', 'error');
+    return;
+  }
+
+  showToast('再生を試みています...', 'success');
+
+  // Try to launch the native webOS media player via Luna Service
+  if (typeof webOS !== 'undefined' && webOS.service && webOS.service.request) {
+    launchNativePlayer(videoUrl, recording);
+  } else {
+    console.log('[nasne] webOS.service not available, falling back to in-app player');
+    openPlayer(videoUrl, recording.title, recording);
+  }
+}
+
+/**
+ * Search the recording object for any HTTP URL field.
+ */
+function findVideoUrl(recording) {
+  // Check known fields first
+  const urlFields = ['contentUrl', 'url', 'res', 'file', 'filePath', 'uri', 'streamUrl', 'resourceUrl'];
+  for (const field of urlFields) {
+    if (recording[field] && typeof recording[field] === 'string' && recording[field].startsWith('http')) {
+      console.log(`[nasne] Found URL in field '${field}':`, recording[field]);
+      return recording[field];
+    }
+  }
+
+  // Walk all properties looking for HTTP URLs
+  for (const [key, value] of Object.entries(recording)) {
+    if (typeof value === 'string' && value.match(/^https?:\/\//)) {
+      console.log(`[nasne] Found URL in field '${key}':`, value);
+      return value;
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [subKey, subVal] of Object.entries(value)) {
+        if (typeof subVal === 'string' && subVal.match(/^https?:\/\//)) {
+          console.log(`[nasne] Found URL in field '${key}.${subKey}':`, subVal);
+          return subVal;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Launch the native webOS media player via Luna Service API.
+ * Tries multiple player app IDs for compatibility across webOS versions.
+ */
+function launchNativePlayer(videoUrl, recording) {
+  // Player app IDs by webOS version (try newest first)
+  const playerApps = [
+    'com.webos.app.mediadiscovery',   // webOS 6+
+    'com.webos.app.photovideo',       // webOS 3.x-5.x
+    'com.webos.app.smartshare',       // webOS 1.0-2.x
+  ];
+
+  const title = recording.title || '録画';
+  const payload = {
+    mediaType: 'VIDEO',
+    fullPath: videoUrl,
+    fileName: title,
+    dlnaInfo: {
+      flagVal: '01700000000000000000000000000000',
+      cleartextSize: '-1',
+      contentLength: '-1',
+      opVal: '01',
+      protocolInfo: 'http-get:*:video/mpeg:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000',
+    },
+  };
+
+  console.log('[nasne] Launching native player with payload:', JSON.stringify(payload, null, 2));
+
+  // Try each player app ID sequentially
+  tryLaunchPlayer(playerApps, 0, payload);
+}
+
+function tryLaunchPlayer(playerApps, index, payload) {
+  if (index >= playerApps.length) {
+    showToast('ネイティブプレーヤーの起動に失敗しました', 'error');
+    return;
+  }
+
+  const appId = playerApps[index];
+  console.log(`[nasne] Trying player: ${appId}`);
+
+  webOS.service.request('luna://com.webos.applicationManager', {
+    method: 'launch',
+    parameters: {
+      id: appId,
+      params: {
+        payload: [payload],
+      },
+    },
+    onSuccess: (res) => {
+      console.log(`[nasne] Native player launched successfully (${appId}):`, res);
+      showToast('ネイティブプレーヤーで再生中', 'success');
+    },
+    onFailure: (err) => {
+      console.warn(`[nasne] Failed to launch ${appId}:`, err);
+      // Try next player app
+      tryLaunchPlayer(playerApps, index + 1, payload);
+    },
+  });
+}
+
+// ─── Video Player ────────────────────────────────────────
+function openPlayer(url, title, recording) {
+  state.isPlayerOpen = true;
+  const overlay = document.getElementById('video-player-overlay');
+  const video = document.getElementById('video-player');
+  const titleEl = document.getElementById('video-title');
+  const durationEl = document.getElementById('video-duration');
+  const currentEl = document.getElementById('video-current-time');
+  const progressFill = document.getElementById('video-progress-fill');
+
+  // Push a history state so the back button doesn't exit the app
+  history.pushState({ player: true }, '');
+
+  overlay.classList.remove('hidden');
+  titleEl.textContent = title || 'Unknown Title';
+
+  // Reset
+  video.src = '';
+  currentEl.textContent = '0:00';
+  durationEl.textContent = '0:00';
+  progressFill.style.width = '0%';
+
+  if (url) {
+    video.src = url;
+    video.play().catch(e => {
+      console.error('[nasne] Play failed:', e);
+      // Show debug info about the recording object to help troubleshoot
+      const fields = recording ? Object.keys(recording).join(', ') : 'N/A';
+      showToast(`再生失敗: ${e.message}`, 'error');
+      console.log('[nasne] Recording fields available:', fields);
+    });
+  } else {
+    showToast('ストリーミングURLが見つかりません', 'error');
+    if (recording) {
+      console.log('[nasne] Recording fields:', Object.keys(recording));
+    }
+  }
+
+  // Focus the overlay to capture key events
+  overlay.setAttribute('tabindex', '-1');
+  overlay.focus();
+
+  // Simple controls loop
+  state.player.timer = setInterval(() => {
+    if (!video.duration) return;
+    const pct = (video.currentTime / video.duration) * 100;
+    progressFill.style.width = `${pct}%`;
+    currentEl.textContent = formatTimeSeconds(video.currentTime);
+    durationEl.textContent = formatTimeSeconds(video.duration);
+  }, 1000);
+}
+
+function closePlayer() {
+  if (!state.isPlayerOpen) return;
+
+  const video = document.getElementById('video-player');
+  video.pause();
+  video.src = '';
+
+  clearInterval(state.player.timer);
+
+  const overlay = document.getElementById('video-player-overlay');
+  overlay.classList.add('hidden');
+  state.isPlayerOpen = false;
+
+  // Restore focus
+  setInitialFocus();
+}
+
+function formatTimeSeconds(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// ─── Input Logic for Player is needed in handleDpad/Enter etc. or a separate handler
+
 // ─── Reservations ────────────────────────────────────────
 function initReservations() {
   document.getElementById('btn-refresh-reservations').addEventListener('click', loadReservations);
@@ -473,6 +753,17 @@ const KEY = {
 };
 
 function initKeyboard() {
+  // Handle back button via popstate (triggered by browser back / history.back)
+  window.addEventListener('popstate', (e) => {
+    if (state.isPlayerOpen) {
+      closePlayer();
+    } else if (state.currentScreen !== 'channels') {
+      switchScreen('channels');
+      setInitialFocus();
+    }
+    // Don't let it propagate to webOS platform
+  });
+
   document.addEventListener('keydown', (e) => {
     // Don't handle navigation when typing in an input
     if (e.target.tagName === 'INPUT' && ![KEY.ENTER, KEY.BACK].includes(e.keyCode)) {
@@ -492,8 +783,9 @@ function initKeyboard() {
         e.preventDefault();
         break;
       case KEY.BACK:
-        onBackPressed();
         e.preventDefault();
+        e.stopPropagation();
+        onBackPressed();
         break;
       case KEY.RED:
         handleRedButton();
@@ -555,6 +847,13 @@ function getCenter(el) {
  */
 function handleDpad(keyCode) {
   const current = document.activeElement;
+
+  // Player navigation
+  if (state.isPlayerOpen) {
+    handlePlayerInput(keyCode);
+    return;
+  }
+
   if (!current || !current.classList.contains('focusable')) {
     // No focused element — focus the first visible one
     setInitialFocus();
@@ -625,6 +924,11 @@ function handleDpad(keyCode) {
  * Handle Enter/OK — click the currently focused element.
  */
 function handleEnter() {
+  if (state.isPlayerOpen) {
+    togglePlayback();
+    return;
+  }
+
   const current = document.activeElement;
   if (current && current.classList.contains('focusable')) {
     current.click();
@@ -636,6 +940,12 @@ function onBackPressed() {
   const dialog = document.getElementById('dialog-overlay');
   if (!dialog.classList.contains('hidden')) {
     dialog.classList.add('hidden');
+    return;
+  }
+
+  // If player is open, close it
+  if (state.isPlayerOpen) {
+    closePlayer();
     return;
   }
 
@@ -659,6 +969,47 @@ function handleRedButton() {
     if (recordBtn) recordBtn.click();
   }
 }
+
+// ─── Player Controls ─────────────────────────────────────
+function handlePlayerInput(keyCode) {
+  const video = document.getElementById('video-player');
+  if (!video) return;
+
+  switch (keyCode) {
+    case KEY.LEFT:
+      video.currentTime = Math.max(0, video.currentTime - 10);
+      showToast('⏪ -10秒', '');
+      break;
+    case KEY.RIGHT:
+      video.currentTime = Math.min(video.duration, video.currentTime + 10);
+      showToast('⏩ +10秒', '');
+      break;
+    case KEY.ENTER:
+      togglePlayback();
+      break;
+  }
+
+  // Show controls temporarily
+  const controls = document.getElementById('video-controls');
+  controls.classList.add('visible');
+  clearTimeout(state.player.controlsTimer);
+  state.player.controlsTimer = setTimeout(() => {
+    controls.classList.remove('visible');
+  }, 3000);
+}
+
+function togglePlayback() {
+  const video = document.getElementById('video-player');
+  if (video.paused) {
+    video.play();
+    showToast('▶ 再生', '');
+  } else {
+    video.pause();
+    showToast('⏸ 一時停止', '');
+  }
+}
+
+
 
 // ─── Toast ───────────────────────────────────────────────
 function showToast(message, type) {

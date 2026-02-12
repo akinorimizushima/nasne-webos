@@ -19,6 +19,7 @@
       <nav id="tab-nav">
         <button class="tab-btn focusable active" data-screen="channels" tabindex="0">チャンネル</button>
         <button class="tab-btn focusable" data-screen="reservations" tabindex="0">録画予約</button>
+        <button class="tab-btn focusable" data-screen="recordings" tabindex="0">録画一覧</button>
         <button class="tab-btn focusable" data-screen="settings" tabindex="0">設定</button>
       </nav>
     </header>
@@ -58,6 +59,17 @@
       </div>
     </section>
 
+    <!-- ===== Screen: Recordings ===== -->
+    <section id="screen-recordings" class="screen">
+      <div class="reservations-header">
+        <h2>録画一覧</h2>
+        <button class="btn focusable" id="btn-refresh-recordings" tabindex="0">更新</button>
+      </div>
+      <div class="recording-list" id="recording-list">
+        <div class="loading-message">読み込み中...</div>
+      </div>
+    </section>
+
     <!-- ===== Screen: Settings ===== -->
     <section id="screen-settings" class="screen">
       <div class="settings-container">
@@ -90,6 +102,24 @@
         <div class="dialog-actions">
           <button class="btn focusable" id="dialog-cancel" tabindex="0">キャンセル</button>
           <button class="btn btn-danger focusable" id="dialog-confirm" tabindex="0">削除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Video Player Overlay ===== -->
+  <div id="video-player-overlay" class="video-player-overlay hidden">
+    <div class="video-container">
+      <video id="video-player" class="video-element"></video>
+      <div class="video-controls" id="video-controls">
+        <div class="video-progress-bar">
+          <div class="video-progress-fill" id="video-progress-fill" style="width: 0%"></div>
+        </div>
+        <div class="video-controls-row">
+          <div class="video-time">
+            <span id="video-current-time">0:00</span> / <span id="video-duration">0:00</span>
+          </div>
+          <div class="video-title" id="video-title">Title</div>
         </div>
       </div>
     </div>
