@@ -440,68 +440,47 @@ async function loadRecordings() {
 async function playRecording(recording) {
   console.log('[nasne] Recording object:', JSON.stringify(recording, null, 2));
 
-  // Build the content URL from the recording
-  let videoUrl = findVideoUrl(recording);
-
-  // Fallback: construct URL from recording id
-  if (!videoUrl && recording.id && state.nasne) {
-    videoUrl = `http://${state.nasne.ip}:64210/recorded/bodyGet?id=${encodeURIComponent(recording.id)}`;
-    console.log('[nasne] Trying constructed URL:', videoUrl);
-  }
-
-  if (!videoUrl) {
-    showToast('再生URLが見つかりません', 'error');
+  // PalmServiceBridge is always available in the webOS TV WebKit runtime
+  if (typeof PalmServiceBridge === 'undefined') {
+    showToast('webOS 環境でのみ再生できます', 'error');
     return;
   }
 
-  showToast('再生を試みています...', 'success');
-
-  // Try to launch the native webOS media player via Luna Service
-  if (typeof webOS !== 'undefined' && webOS.service && webOS.service.request) {
-    launchNativePlayer(videoUrl, recording);
-  } else {
-    console.log('[nasne] webOS.service not available, falling back to in-app player');
-    openPlayer(videoUrl, recording.title, recording);
-  }
+  showToast('メディアプレーヤーを起動中...', 'success');
+  launchMediaServerApp(recording);
 }
 
 /**
- * Search the recording object for any HTTP URL field.
+ * Make a Luna service request via PalmServiceBridge.
+ * This works on all webOS TV versions without needing the webOSjs library.
  */
-function findVideoUrl(recording) {
-  // Check known fields first
-  const urlFields = ['contentUrl', 'url', 'res', 'file', 'filePath', 'uri', 'streamUrl', 'resourceUrl'];
-  for (const field of urlFields) {
-    if (recording[field] && typeof recording[field] === 'string' && recording[field].startsWith('http')) {
-      console.log(`[nasne] Found URL in field '${field}':`, recording[field]);
-      return recording[field];
-    }
-  }
-
-  // Walk all properties looking for HTTP URLs
-  for (const [key, value] of Object.entries(recording)) {
-    if (typeof value === 'string' && value.match(/^https?:\/\//)) {
-      console.log(`[nasne] Found URL in field '${key}':`, value);
-      return value;
-    }
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      for (const [subKey, subVal] of Object.entries(value)) {
-        if (typeof subVal === 'string' && subVal.match(/^https?:\/\//)) {
-          console.log(`[nasne] Found URL in field '${key}.${subKey}':`, subVal);
-          return subVal;
+function lunaRequest(uri, params) {
+  return new Promise((resolve, reject) => {
+    const bridge = new PalmServiceBridge();
+    bridge.onservicecallback = (response) => {
+      try {
+        const result = JSON.parse(response);
+        if (result.returnValue === false || result.errorCode) {
+          reject(result);
+        } else {
+          resolve(result);
         }
+      } catch (e) {
+        reject({ errorText: 'Failed to parse response' });
       }
-    }
-  }
-  return null;
+    };
+    bridge.call(uri, JSON.stringify(params));
+  });
 }
 
 /**
- * Launch the native webOS media player via Luna Service API.
- * Tries multiple player app IDs for compatibility across webOS versions.
+ * Launch the TV's built-in media server app (DTCP-IP capable) for playback.
+ * nasne content is DTCP-IP protected, so it must be played through the
+ * TV's native media player which has DTCP-IP decryption support.
+ * The user will navigate to nasne from within the media player's DLNA device list.
  */
-function launchNativePlayer(videoUrl, recording) {
-  // Player app IDs by webOS version (try newest first)
+function launchMediaServerApp(recording) {
+  // Media player app IDs by webOS version (try newest first)
   const playerApps = [
     'com.webos.app.mediadiscovery',   // webOS 6+
     'com.webos.app.photovideo',       // webOS 3.x-5.x
@@ -509,52 +488,33 @@ function launchNativePlayer(videoUrl, recording) {
   ];
 
   const title = recording.title || '録画';
-  const payload = {
-    mediaType: 'VIDEO',
-    fullPath: videoUrl,
-    fileName: title,
-    dlnaInfo: {
-      flagVal: '01700000000000000000000000000000',
-      cleartextSize: '-1',
-      contentLength: '-1',
-      opVal: '01',
-      protocolInfo: 'http-get:*:video/mpeg:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000',
-    },
-  };
-
-  console.log('[nasne] Launching native player with payload:', JSON.stringify(payload, null, 2));
-
-  // Try each player app ID sequentially
-  tryLaunchPlayer(playerApps, 0, payload);
+  console.log(`[nasne] Launching media server app for: ${title}`);
+  tryLaunchMediaAppBare(playerApps, 0);
 }
 
-function tryLaunchPlayer(playerApps, index, payload) {
+/**
+ * Launch a media player app without params (user manually navigates to nasne content).
+ * This is the final fallback when payload-based launch fails.
+ */
+async function tryLaunchMediaAppBare(playerApps, index) {
   if (index >= playerApps.length) {
-    showToast('ネイティブプレーヤーの起動に失敗しました', 'error');
+    showToast('メディアプレーヤーの起動に失敗しました', 'error');
     return;
   }
 
   const appId = playerApps[index];
-  console.log(`[nasne] Trying player: ${appId}`);
+  console.log(`[nasne] Trying media app: ${appId} (bare launch)`);
 
-  webOS.service.request('luna://com.webos.applicationManager', {
-    method: 'launch',
-    parameters: {
+  try {
+    const res = await lunaRequest('luna://com.webos.applicationManager/launch', {
       id: appId,
-      params: {
-        payload: [payload],
-      },
-    },
-    onSuccess: (res) => {
-      console.log(`[nasne] Native player launched successfully (${appId}):`, res);
-      showToast('ネイティブプレーヤーで再生中', 'success');
-    },
-    onFailure: (err) => {
-      console.warn(`[nasne] Failed to launch ${appId}:`, err);
-      // Try next player app
-      tryLaunchPlayer(playerApps, index + 1, payload);
-    },
-  });
+    });
+    console.log(`[nasne] Media app launched (${appId}):`, res);
+    showToast('メディアプレーヤーから nasne を選択してください', 'success');
+  } catch (err) {
+    console.warn(`[nasne] Failed to launch ${appId}:`, err);
+    tryLaunchMediaAppBare(playerApps, index + 1);
+  }
 }
 
 // ─── Video Player ────────────────────────────────────────
