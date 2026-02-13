@@ -446,8 +446,8 @@ async function playRecording(recording) {
     return;
   }
 
-  showToast('メディアプレーヤーを起動中...', 'success');
-  launchMediaServerApp(recording);
+  showToast('DLNA コンテンツを検索中...', 'success');
+  await launchMediaServerApp(recording);
 }
 
 /**
@@ -475,11 +475,13 @@ function lunaRequest(uri, params) {
 
 /**
  * Launch the TV's built-in media server app (DTCP-IP capable) for playback.
- * nasne content is DTCP-IP protected, so it must be played through the
- * TV's native media player which has DTCP-IP decryption support.
- * The user will navigate to nasne from within the media player's DLNA device list.
+ *
+ * Strategy:
+ * 1. Try to find the recording via DLNA ContentDirectory (get proper res URL + protocolInfo)
+ * 2. If found, launch media player with DLNA payload for auto-play
+ * 3. If not found, fall back to launching media app without params
  */
-function launchMediaServerApp(recording) {
+async function launchMediaServerApp(recording) {
   // Media player app IDs by webOS version (try newest first)
   const playerApps = [
     'com.webos.app.mediadiscovery',   // webOS 6+
@@ -488,8 +490,82 @@ function launchMediaServerApp(recording) {
   ];
 
   const title = recording.title || '録画';
-  console.log(`[nasne] Launching media server app for: ${title}`);
+
+  // Try DLNA ContentDirectory discovery for auto-play
+  if (state.nasne) {
+    try {
+      console.log(`[nasne] Searching DLNA for: "${title}"`);
+      const dlnaResult = await state.nasne.findDlnaRecording(title);
+
+      if (dlnaResult && dlnaResult.url) {
+        console.log('[nasne] DLNA content found, launching with payload');
+        showToast('コンテンツを発見、再生を開始します...', 'success');
+
+        // Parse protocolInfo into dlnaInfo fields
+        const protocolInfo = dlnaResult.protocolInfo || '';
+        const payload = {
+          mediaType: 'VIDEO',
+          fullPath: dlnaResult.url,
+          fileName: title,
+          dlnaInfo: {
+            flagVal: extractDlnaFlag(protocolInfo, 'DLNA.ORG_FLAGS') || '01700000000000000000000000000000',
+            cleartextSize: '-1',
+            contentLength: '-1',
+            opVal: extractDlnaFlag(protocolInfo, 'DLNA.ORG_OP') || '01',
+            protocolInfo: protocolInfo,
+          },
+        };
+
+        console.log('[nasne] Launch payload:', JSON.stringify(payload, null, 2));
+        await tryLaunchMediaAppWithPayload(playerApps, 0, payload);
+        return;
+      }
+    } catch (err) {
+      console.warn('[nasne] DLNA discovery failed:', err);
+    }
+  }
+
+  // Fallback: launch media app without params
+  console.log('[nasne] DLNA auto-play not available, launching bare');
+  showToast('メディアプレーヤーを起動中...', 'success');
   tryLaunchMediaAppBare(playerApps, 0);
+}
+
+/**
+ * Extract a DLNA flag value from protocolInfo string.
+ */
+function extractDlnaFlag(protocolInfo, flagName) {
+  const match = protocolInfo.match(new RegExp(`${flagName}=([^;]+)`));
+  return match ? match[1] : null;
+}
+
+/**
+ * Try launching a media player app with DLNA payload for automatic playback.
+ */
+async function tryLaunchMediaAppWithPayload(playerApps, index, payload) {
+  if (index >= playerApps.length) {
+    // All apps failed with payload — try bare launch
+    console.log('[nasne] All player apps failed with payload, trying bare launch');
+    tryLaunchMediaAppBare(playerApps, 0);
+    return;
+  }
+
+  const appId = playerApps[index];
+  console.log(`[nasne] Trying media app: ${appId} (with payload)`);
+
+  try {
+    const res = await lunaRequest('luna://com.webos.applicationManager/launch', {
+      id: appId,
+      params: {
+        payload: [payload],
+      },
+    });
+    console.log(`[nasne] Media app launched successfully (${appId}):`, res);
+    showToast('メディアプレーヤーで再生を開始します', 'success');
+  } catch (err) {
+    console.warn(`[nasne] Failed to launch ${appId} with payload:`, err);
+    tryLaunchMediaAppWithPayload(playerApps, index + 1, payload);
+  }
 }
 
 /**
